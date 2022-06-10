@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/gocolly/colly"
+	"github.com/influxdata/influxdb-client-go/v2"
 	"io"
 	"log"
 	"os"
@@ -89,23 +90,30 @@ func GetJSON(url string, jsonContent *string, token string) {
 
 func main() {
 	var (
-		interval = flag.Duration("interval", 1000 * time.Millisecond, "Interval for collecting metrics data.")
-		nodeURL = flag.String("node", "https://kubernetes.default.svc/apis/metrics.k8s.io/v1beta1/nodes/", "URL for collecting nodes metrics.")
-		podURL = flag.String("pod", "https://kubernetes.default.svc/apis/metrics.k8s.io/v1beta1/pods/", "URL for collecting pods metrics.")
-		tokenFile = flag.String("token", "/var/run/secrets/kubernetes.io/serviceaccount/token", "Bearer token file for authorization.")
+		influxBucket = flag.String("bucket", "metrix", "InfluxDB bucket")
+		influxHost = flag.String("dbhost", "http://example.com:8086", "InfluxDB host")
+		influxOrg = flag.String("org", "primary", "Organization")
+		influxToken = flag.String("dbtoken", "metrix", "InfluxDB token")
+		interval = flag.Duration("interval", 1000 * time.Millisecond, "Interval for collecting metrics data")
+		nodeURL = flag.String("node", "https://kubernetes.default.svc/apis/metrics.k8s.io/v1beta1/nodes/", "URL for collecting nodes metrics")
+		podURL = flag.String("pod", "https://kubernetes.default.svc/apis/metrics.k8s.io/v1beta1/pods/", "URL for collecting pods metrics")
+		tokenFile = flag.String("token", "/var/run/secrets/kubernetes.io/serviceaccount/token", "Bearer token file for authorization")
 	)
+	flag.Parse()
 	bytes, err := os.ReadFile(*tokenFile)
 	if err != nil {
 		panic(err)
 	}
 	token := string(bytes)
 	var wg sync.WaitGroup
-	flag.Parse()
 	for {
 		/* collect node metrics */
 		wg.Add(1)
 		go func(url string, token string){
 			defer wg.Done()
+			client := influxdb2.NewClient(*influxHost, *influxToken)
+			defer client.Close()
+  			writeAPI := client.WriteAPI(*influxOrg, *influxBucket)
 			var metrics string
 			GetJSON(url, &metrics, token)
 			dec := json.NewDecoder(strings.NewReader(metrics))
@@ -117,30 +125,29 @@ func main() {
 					log.Fatal(err)
 				}
 				for i := 0;i < len(nm.Items);i++ {
-					fmt.Printf("%s\n", nm.Items[i].Metadata.Name)
+					nodeName := nm.Items[i].Metadata.Name
 					cpusrc :=  nm.Items[i].Usage.CPU
 					cpumtx, err := strconv.ParseInt(cpusrc[:len(cpusrc) - 1], 10, 64)
-					if err == nil {
-						fmt.Printf("%d(ns)", cpumtx)
-					} else {
+					if err != nil {
 						log.Fatal(err)
 					}
-					fmt.Printf("%s\n", nm.Items[i].Usage.CPU)
 					memsrc := nm.Items[i].Usage.Memory
 					memmtx, err := strconv.ParseInt(memsrc[:len(memsrc) - 2], 10, 64)
-					if err == nil {
-						fmt.Printf("%d(ki)\n", memmtx)
-					} else {
+					if err != nil {
 						log.Fatal(err)
 					}
-					fmt.Printf("%s\n", nm.Items[i].Usage.Memory)
+					writeAPI.WriteRecord(fmt.Sprintf("%s,unit=node %s_cpu(ns)=%d,%s_memory(Ki)=%d", nodeName, nodeName, cpumtx, nodeName, memmtx))
 				}
 			}
+			writeAPI.Flush()
 		}(*nodeURL, token)
 		/* collect pod metrics */
 		wg.Add(1)
 		go func(url string, token string){
 			defer wg.Done()
+			client := influxdb2.NewClient(*influxHost, *influxToken)
+			defer client.Close()
+  			writeAPI := client.WriteAPI(*influxOrg, *influxBucket)
 			var metrics string
 			GetJSON(url, &metrics, token)
 			dec := json.NewDecoder(strings.NewReader(metrics))
@@ -152,26 +159,26 @@ func main() {
 					log.Fatal(err)
 				}
 				for i := 0;i < len(pm.Items);i++ {
-					fmt.Printf("%s\n", pm.Items[i].Metadata.Namespace)
-					fmt.Printf("%s\n", pm.Items[i].Metadata.Name)
+					namespace := pm.Items[i].Metadata.Namespace
+					podName := pm.Items[i].Metadata.Name
 					for j := 0;j < len(pm.Items[i].Containers);j++ {
+						app := pm.Items[i].Containers[j].Name
 						cpusrc := pm.Items[i].Containers[j].Usage.CPU
 						cpumtx, err := strconv.ParseInt(cpusrc[:len(cpusrc) - 1], 10, 64)
-						if err == nil {
-							fmt.Printf("%d(ns)\n", cpumtx)
-						} else {
+						if err != nil {
 							log.Fatal(err)
 						}
 						memsrc := pm.Items[i].Containers[j].Usage.Memory
 						memmtx, err := strconv.ParseInt(memsrc[:len(memsrc) - 2], 10, 64)
-						if err == nil {
-							fmt.Printf("%d(ki)\n", memmtx)
-						} else {
+						if err != nil {
 							log.Fatal(err)
 						}
+						writeAPI.WriteRecord(fmt.Sprintf("%s,unit=%s %s_cpu(ns)=%d,%s_memory(Ki)=%d", namespace, app, podName,
+						cpumtx, podName, memmtx))
 					}
 				}
 			}
+			writeAPI.Flush()
 		}(*podURL, token)
 		wg.Wait()
 		time.Sleep(*interval)
