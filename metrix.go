@@ -165,7 +165,7 @@ func main() {
 						memsrc := pm.Items[i].Containers[j].Usage.Memory
 						memmtx, err := strconv.ParseInt(memsrc[:len(memsrc) - 2], 10, 64)
 						if err == nil {
-							fmt.Printf("%d(ns)\n", memmtx)
+							fmt.Printf("%d(ki)\n", memmtx)
 						} else {
 							log.Fatal(err)
 						}
